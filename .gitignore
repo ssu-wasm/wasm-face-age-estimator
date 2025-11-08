@@ -1,0 +1,78 @@
+# C++ / 일반 빌드 산출물
+*.o
+*.obj
+*.lo
+*.la
+*.al
+*.a
+*.lib
+*.dll
+*.so
+*.so.*
+*.dylib
+*.exe
+*.out
+*.app
+*.ipa
+*.i*86
+*.x86_64
+*.hex
+
+# Debug / Release 디렉토리
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+build/
+build-*/
+out/
+bin/
+obj/
+
+# CMake 생성 파일들
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+CMakeScripts/
+Testing/
+CTestTestfile.cmake
+install_manifest.txt
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# CLion / IntelliJ / JetBrains
+.idea/
+cmake-build-*/
+
+# Visual Studio
+*.user
+*.userprefs
+*.opensdf
+*.sdf
+*.cachefile
+*.dbmdl
+*.pdb
+*.ipch
+*.aps
+*.ncb
+*.opendb
+
+# Xcode
+*.xcworkspace
+*.xcuserstate
+*.xcuserdata/
+*.xcodeproj/
+
+# 기타 편집기 / OS 파일
+*~
+*.swp
+*.tmp
+Thumbs.db
+.DS_Store
+
+# Visual Studio 로컬 인덱스 / 캐시
+.vs/
+CopilotIndices/
