@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <emscripten/bind.h>
 #include <string>
 #include <vector>
@@ -18,6 +19,11 @@ extern "C" {
             data[idx + 2] = 0;   // B
             data[idx + 3] = 255; // A
         }
+    }
+
+    void process_frame_binding(uintptr_t dataPtr, int width, int height) {
+        auto* data = reinterpret_cast<uint8_t*>(dataPtr);
+        process_frame(data, width, height);
     }
 
      void applyGrayscale(uintptr_t bufferPtr, int width, int height) {
@@ -93,6 +99,7 @@ private:
 };
 
 EMSCRIPTEN_BINDINGS(my_module) {
+    function("process_frame", &process_frame_binding);
     function("applyGrayscale", &applyGrayscale);
     function("estimate_age_simple", &estimate_age_simple);
     
