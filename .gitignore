@@ -118,3 +118,5 @@ Thumbs.db
 # Local IDE cache (should not be shared)
 .vs/
 CopilotIndices/
+
+./emsdk
