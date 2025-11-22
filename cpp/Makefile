@@ -19,7 +19,7 @@ LDFLAGS = -s WASM=1 \
           -s EXPORT_NAME="CreateSignWasmModule" \
           -s ALLOW_MEMORY_GROWTH=1 \
           -s INITIAL_MEMORY=16777216 \
-          -s EXPORTED_FUNCTIONS="['_malloc', '_free']" \
+          -s EXPORTED_FUNCTIONS="['_malloc', '_free', '_test_function']" \
           -s EXPORTED_RUNTIME_METHODS="['ccall', 'cwrap', 'HEAPU8', 'HEAP8']" \
           --bind \
           -s ASSERTIONS=0 \

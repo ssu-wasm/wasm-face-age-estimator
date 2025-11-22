@@ -1,81 +1,93 @@
-#pragma once
+#ifndef SIGN_RECOGNITION_H
+#define SIGN_RECOGNITION_H
 
-#include <string>
+#include <emscripten/bind.h>
 #include <vector>
-#include <array>
+#include <string>
 
-namespace SignRecognition {
-
-struct ImageData {
-    uint8_t* data;
-    int width;
-    int height;
-    int channels;
-};
-
-struct Point2D {
-    float x, y;
-};
-
+// 손 랜드마크 구조체
 struct HandLandmark {
-    std::array<Point2D, 21> points;  // MediaPipe 손 랜드마크 21개 점
-    float confidence;
-    bool is_detected;
+    float x;
+    float y;
+    float z;
 };
 
+// 인식 결과 구조체
 struct RecognitionResult {
-    std::string gesture_name;
-    int gesture_id;
+    std::string gesture;
     float confidence;
-    std::vector<HandLandmark> hands;
-    bool is_valid;
+    int id;
 };
 
+// 제스처 인식기 클래스
 class SignRecognizer {
-private:
-    float detection_threshold_;
-    float recognition_threshold_;
-    bool is_initialized_;
-    
-    // 간단한 수화 제스처 데이터베이스
-    struct GestureTemplate {
-        std::string name;
-        int id;
-        std::array<Point2D, 21> template_points;
-    };
-    
-    std::vector<GestureTemplate> gesture_templates_;
-    
-    // 손 검출을 위한 간단한 피부색 기반 검출
-    bool detectSkinRegion(const ImageData& image, std::vector<Point2D>& contour);
-    
-    // 손 랜드마크 추정 (간소화된 버전)
-    HandLandmark extractHandLandmarks(const ImageData& image, const std::vector<Point2D>& contour);
-    
-    // 제스처 매칭
-    RecognitionResult matchGesture(const HandLandmark& hand);
-    
-    // 거리 계산
-    float calculateDistance(const std::array<Point2D, 21>& points1, 
-                           const std::array<Point2D, 21>& points2);
-
 public:
     SignRecognizer();
     ~SignRecognizer();
     
+    // 초기화
     bool initialize();
-    void cleanup();
     
-    std::string get_version() const { return "1.0.0"; }
+    // 랜드마크로부터 제스처 인식
+    RecognitionResult recognize(const std::vector<HandLandmark>& landmarks);
     
-    void set_detection_threshold(float threshold) { detection_threshold_ = threshold; }
-    void set_recognition_threshold(float threshold) { recognition_threshold_ = threshold; }
+    // 랜드마크 배열 포인터로 인식 (WASM에서 사용)
+    std::string recognizeFromPointer(float* landmarks, int count);
     
-    RecognitionResult process_frame(const ImageData& image);
+    // 임계값 설정
+    void setDetectionThreshold(float threshold);
+    void setRecognitionThreshold(float threshold);
     
-    // 제스처 템플릿 관리
-    bool load_gesture_templates();
-    void add_custom_gesture(const std::string& name, int id, const std::array<Point2D, 21>& points);
+    // 버전 정보
+    std::string getVersion() const;
+
+private:
+    // 손가락이 펴져있는지 확인
+    bool isFingerExtended(const HandLandmark& tip, const HandLandmark& pip, const HandLandmark& mcp) const;
+    
+    // 엄지가 펴져있는지 확인
+    bool isThumbExtended(const HandLandmark& thumbTip, const HandLandmark& thumbIp, const HandLandmark& wrist) const;
+    
+    // 규칙 기반 제스처 인식
+    RecognitionResult recognizeByRules(const std::vector<HandLandmark>& landmarks);
+    
+    // 랜드마크 정규화
+    std::vector<float> normalizeLandmarks(const std::vector<HandLandmark>& landmarks);
+    
+    // 거리 계산
+    float calculateDistance(const HandLandmark& a, const HandLandmark& b) const;
+    
+    // 각도 계산
+    float calculateAngle(const HandLandmark& a, const HandLandmark& b, const HandLandmark& c) const;
+    
+    float detectionThreshold;
+    float recognitionThreshold;
 };
 
-} // namespace SignRecognition
+// Embind 바인딩
+EMSCRIPTEN_BINDINGS(sign_recognition) {
+    emscripten::class_<HandLandmark>("HandLandmark")
+        .constructor<>()
+        .property("x", &HandLandmark::x)
+        .property("y", &HandLandmark::y)
+        .property("z", &HandLandmark::z);
+    
+    emscripten::class_<RecognitionResult>("RecognitionResult")
+        .constructor<>()
+        .property("gesture", &RecognitionResult::gesture)
+        .property("confidence", &RecognitionResult::confidence)
+        .property("id", &RecognitionResult::id);
+    
+    emscripten::class_<SignRecognizer>("SignRecognizer")
+        .constructor<>()
+        .function("initialize", &SignRecognizer::initialize)
+        .function("recognize", &SignRecognizer::recognize)
+        .function("recognizeFromPointer", &SignRecognizer::recognizeFromPointer)
+        .function("setDetectionThreshold", &SignRecognizer::setDetectionThreshold)
+        .function("setRecognitionThreshold", &SignRecognizer::setRecognitionThreshold)
+        .function("getVersion", &SignRecognizer::getVersion);
+    
+    emscripten::register_vector<HandLandmark>("VectorHandLandmark");
+}
+
+#endif // SIGN_RECOGNITION_H
