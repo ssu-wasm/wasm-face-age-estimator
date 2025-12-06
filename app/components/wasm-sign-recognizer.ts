@@ -21,14 +21,18 @@ interface WasmModule {
   // Emscripten 필수 함수/속성
   _malloc: (size: number) => number;
   _free: (ptr: number) => void;
-  
+
   // 메모리 버퍼 접근용
-  HEAPU8: Uint8Array; 
+  HEAPU8: Uint8Array;
   HEAPF32?: Float32Array;
   buffer?: ArrayBuffer;
-  asm?: any; 
-  
-  [key: string]: unknown;
+  asm?: {
+    memory: {
+      buffer: ArrayBuffer;
+    };
+  } | null;
+
+  [key: string]: unknown | undefined;
 }
 
 // 규칙 기반 인식기 (Rule-based)
@@ -62,7 +66,7 @@ declare global {
 
 export class WASMSignRecognizer {
   private wasmModule: WasmModule | null = null;
-  private recognizer: SignRecognizerInstance | null = null;      // Rule-based
+  private recognizer: SignRecognizerInstance | null = null; // Rule-based
   private mlpRecognizer: SignRecognitionInstance | null = null; // MLP
   private isInitialized: boolean = false;
 
@@ -83,19 +87,19 @@ export class WASMSignRecognizer {
           script.onerror = () => reject(new Error("WASM script load failed"));
           document.head.appendChild(script);
         });
-        
+
         // 전역 함수 로드 대기
         let count = 0;
-        while(typeof CreateSignWasmModule === "undefined" && count < 50) {
-            await new Promise(r => setTimeout(r, 50));
-            count++;
+        while (typeof CreateSignWasmModule === "undefined" && count < 50) {
+          await new Promise((r) => setTimeout(r, 50));
+          count++;
         }
       }
 
       // 2. 모듈 생성
       console.log("🔄 WASM 모듈 생성 중...");
       this.wasmModule = await CreateSignWasmModule({
-        locateFile: (path) => path.endsWith(".wasm") ? `/wasm/${path}` : path
+        locateFile: (path) => (path.endsWith(".wasm") ? `/wasm/${path}` : path),
       });
 
       if (!this.wasmModule) throw new Error("Module is null");
@@ -103,26 +107,25 @@ export class WASMSignRecognizer {
       // 3. 인스턴스 생성
       // (A) 규칙 기반
       if (this.wasmModule.SignRecognizer) {
-          this.recognizer = new this.wasmModule.SignRecognizer();
-          this.recognizer.initialize();
-          this.recognizer.setDetectionThreshold(0.5);
-          this.recognizer.setRecognitionThreshold(0.7);
-          console.log("✅ Rule-based Recognizer initialized");
+        this.recognizer = new this.wasmModule.SignRecognizer();
+        this.recognizer.initialize();
+        this.recognizer.setDetectionThreshold(0.5);
+        this.recognizer.setRecognitionThreshold(0.7);
+        console.log("✅ Rule-based Recognizer initialized");
       } else {
-          console.error("❌ SignRecognizer class not found");
+        console.error("❌ SignRecognizer class not found");
       }
 
       // (B) 딥러닝 기반
       if (this.wasmModule.SignRecognition) {
-          this.mlpRecognizer = new this.wasmModule.SignRecognition();
-          console.log("✅ MLP Recognizer initialized");
+        this.mlpRecognizer = new this.wasmModule.SignRecognition();
+        console.log("✅ MLP Recognizer initialized");
       } else {
-          console.warn("⚠️ SignRecognition class not found (MLP disabled)");
+        console.warn("⚠️ SignRecognition class not found (MLP disabled)");
       }
 
       this.isInitialized = true;
       return true;
-
     } catch (error) {
       console.error("❌ WASM Init Failed:", error);
       return false;
@@ -132,7 +135,13 @@ export class WASMSignRecognizer {
   // ============================================================
   // 1. 규칙 기반 인식 (Rule-based) - [메모리 에러 해결 버전]
   // ============================================================
-  async recognizeFast(landmarks: any[]): Promise<RecognitionResult> {
+  async recognizeFast(
+    landmarks: {
+      x: number;
+      y: number;
+      z: number;
+    }[]
+  ): Promise<RecognitionResult> {
     if (!this.isInitialized || !this.recognizer || !this.wasmModule) {
       return { gesture: "초기화 안됨", confidence: 0, id: 0 };
     }
@@ -164,14 +173,14 @@ export class WASMSignRecognizer {
       // 3. [핵심] 최신 버퍼 직접 가져오기 (Direct Memory Access)
       // HEAPF32 전역 변수는 메모리 확장 시 끊어지므로(Detached), 항상 최신 buffer를 조회해야 함
       let buffer: ArrayBuffer | undefined;
-      
+
       // Emscripten은 HEAPU8을 자동으로 갱신하므로 가장 신뢰할 수 있음
       if (this.wasmModule.HEAPU8 && this.wasmModule.HEAPU8.buffer) {
-          buffer = this.wasmModule.HEAPU8.buffer as ArrayBuffer;
+        buffer = this.wasmModule.HEAPU8.buffer as ArrayBuffer;
       } else if (this.wasmModule.buffer) {
-          buffer = this.wasmModule.buffer;
+        buffer = this.wasmModule.buffer;
       } else if (this.wasmModule.asm && this.wasmModule.asm.memory) {
-          buffer = this.wasmModule.asm.memory.buffer;
+        buffer = this.wasmModule.asm.memory.buffer;
       }
 
       if (!buffer) throw new Error("WASM Memory buffer not found");
@@ -183,7 +192,7 @@ export class WASMSignRecognizer {
 
       // 5. C++ 인식 함수 호출
       const resultJson = this.recognizer.recognizeFromPointer(ptr, 42);
-      
+
       // 6. 메모리 반환 (풀링)
       if (this.memoryPool.length < 50) {
         this.memoryPool.push(ptr);
@@ -192,12 +201,13 @@ export class WASMSignRecognizer {
       }
 
       return JSON.parse(resultJson);
-
     } catch (e) {
       console.error("Rule-based Error:", e);
       // 에러 발생 시 해당 메모리는 해제 (풀에 넣지 않음)
       if (ptr !== 0 && this.wasmModule) {
-        try { this.wasmModule._free(ptr); } catch(freeErr) {}
+        try {
+          this.wasmModule._free(ptr);
+        } catch (freeErr) {}
       }
       return { gesture: "메모리 에러", confidence: 0, id: 0 };
     }
@@ -212,16 +222,19 @@ export class WASMSignRecognizer {
     const vecMean = new this.wasmModule.VectorFloat();
     const vecScale = new this.wasmModule.VectorFloat();
 
-    mean.forEach(v => vecMean.push_back(v));
-    scale.forEach(v => vecScale.push_back(v));
+    mean.forEach((v) => vecMean.push_back(v));
+    scale.forEach((v) => vecScale.push_back(v));
 
     this.mlpRecognizer.setScaler(vecMean, vecScale);
-    
+
     vecMean.delete();
     vecScale.delete();
   }
 
-  public predictWithMLP(results: any): number {
+  public predictWithMLP(results: {
+    multiHandLandmarks: HandLandmark[][];
+    multiHandedness: { label: string }[];
+  }): number {
     if (!this.mlpRecognizer || !this.wasmModule?.VectorFloat) return -1;
 
     // 1. MediaPipe 결과를 126차원 벡터로 변환 (정규화 + 정렬 포함)
@@ -236,19 +249,22 @@ export class WASMSignRecognizer {
 
     let result = -1;
     try {
-        // 3. 추론 실행
-        result = this.mlpRecognizer.predictMLP(inputVec);
-    } catch(e) {
-        console.error("MLP Error:", e);
+      // 3. 추론 실행
+      result = this.mlpRecognizer.predictMLP(inputVec);
+    } catch (e) {
+      console.error("MLP Error:", e);
     }
-    
+
     inputVec.delete();
     return result;
   }
 
   // [핵심] 기존 sign-language-estimator.js의 로직 완벽 이식
   // 왼손(0~62), 오른손(63~125) 순서로 채워넣음
-  private convertLandmarksToVector(results: any): number[] {
+  private convertLandmarksToVector(results: {
+    multiHandLandmarks: HandLandmark[][];
+    multiHandedness: { label: string }[];
+  }): number[] {
     const vec: number[] = []; // 결과 벡터 (빈 배열로 시작)
 
     // 데이터가 없으면 0으로 126개 채워서 반환
@@ -256,16 +272,16 @@ export class WASMSignRecognizer {
       return new Array(126).fill(0.0);
     }
 
-    let leftPts: any = null;
-    let rightPts: any = null;
+    let leftPts: HandLandmark[] | null = null;
+    let rightPts: HandLandmark[] | null = null;
 
     // 1. 손 분류 (MediaPipe 라벨 기준)
     for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+      const pts = results.multiHandLandmarks[i];
       const label = results.multiHandedness[i]?.label;
-      if (label === "Left") leftPts = results.multiHandLandmarks[i];
-      if (label === "Right") rightPts = results.multiHandLandmarks[i];
+      if (label === "Left") leftPts = pts;
+      if (label === "Right") rightPts = pts;
     }
-
     // 2. 왼손 처리 (0~62 인덱스)
     if (leftPts) {
       const norm = this.normalizeLandmarks(leftPts);
@@ -293,38 +309,43 @@ export class WASMSignRecognizer {
 
   // [핵심] 정규화 함수 (기존 로직 이식)
   // 손목을 (0,0,0)으로 이동하고 크기 스케일링
-  private normalizeLandmarks(pts: any[]): {x:number, y:number, z:number}[] {
+  private normalizeLandmarks(
+    pts: HandLandmark[]
+  ): { x: number; y: number; z: number }[] {
     if (!pts || pts.length === 0) return [];
 
     // 1. 중심 이동 (손목 기준)
     const base = pts[0];
-    const centered = pts.map(p => ({
+    const centered = pts.map((p) => ({
       x: p.x - base.x,
       y: p.y - base.y,
-      z: (p.z || 0) - (base.z || 0)
+      z: (p.z || 0) - (base.z || 0),
     }));
 
     // 2. 크기 스케일링 (손목 ~ 중지 기저부 거리 기준)
     const ref = centered[9];
-    const scale = Math.sqrt(ref.x * ref.x + ref.y * ref.y + ref.z * ref.z) || 1.0;
+    const scale =
+      Math.sqrt(ref.x * ref.x + ref.y * ref.y + ref.z * ref.z) || 1.0;
 
-    return centered.map(p => ({
+    return centered.map((p) => ({
       x: p.x / scale,
       y: p.y / scale,
-      z: p.z / scale
+      z: p.z / scale,
     }));
   }
-  
+
   dispose() {
-      if (this.wasmModule) {
-          this.memoryPool.forEach(ptr => {
-            try { this.wasmModule?._free(ptr); } catch(e) {}
-          });
-      }
-      this.memoryPool = [];
-      this.recognizer = null;
-      this.mlpRecognizer = null;
-      this.wasmModule = null;
-      this.isInitialized = false;
+    if (this.wasmModule) {
+      this.memoryPool.forEach((ptr) => {
+        try {
+          this.wasmModule?._free(ptr);
+        } catch (e) {}
+      });
+    }
+    this.memoryPool = [];
+    this.recognizer = null;
+    this.mlpRecognizer = null;
+    this.wasmModule = null;
+    this.isInitialized = false;
   }
 }

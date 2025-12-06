@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "후이즈유",
-  description: "얼굴 나이 추정 웹앱",
+  title: "소리손",
+  description: "수화 인식 웹앱",
 };
 
 export default function RootLayout({

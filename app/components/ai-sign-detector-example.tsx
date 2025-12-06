@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { WASMSignRecognizer } from "./wasm-sign-recognizer";
 import { MediaPipeHandDetector, HandLandmark } from "./mediapipe-hand-detector";
-import PerformanceComparison from "./performance-comparison";
+
 import styles from "./SignDetector.module.css";
 
 interface RecognitionResult {
@@ -33,7 +33,6 @@ type RecognitionMode = "JS_RULE" | "WASM_RULE" | "WASM_MLP";
 
 export default function AISignDetectorExample() {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const selfVideoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const selfCanvasRef = useRef<HTMLCanvasElement>(null);
   const isRecordingRef = useRef(false);
