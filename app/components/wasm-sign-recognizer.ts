@@ -1,6 +1,7 @@
 /**
- * WASM 기반 수화 인식기
- * C++로 작성된 제스처 인식 로직을 WASM으로 실행
+ * WASM 기반 수화 인식기 (Hybrid: Rule-based + MLP)
+ * - 메모리 안전성 확보 (Direct Memory Access)
+ * - MLP 데이터 전처리 로직 포함 (convertLandmarksToVector, normalizeLandmarks)
  */
 
 import { HandLandmark } from "./mediapipe-hand-detector";
@@ -12,45 +13,44 @@ export interface RecognitionResult {
 }
 
 interface WasmModule {
+  // C++ 클래스 생성자들
   SignRecognizer: new () => SignRecognizerInstance;
-  HandLandmark?: new () => HandLandmarkInstance; // optional - recognizeFromPointer 사용 시 불필요
-  RecognitionResult?: new () => RecognitionResultInstance; // optional
-  VectorHandLandmark?: new () => VectorHandLandmarkInstance; // optional - register_vector로 등록되지만 생성자로 사용 불가
-  test_function?: () => string;
+  SignRecognition?: new () => SignRecognitionInstance;
+  VectorFloat?: new () => VectorFloatInstance;
+
+  // Emscripten 필수 함수/속성
   _malloc: (size: number) => number;
   _free: (ptr: number) => void;
-  HEAPF32?: Float32Array; // optional - recognizeFromPointer 사용 시 필요
-  HEAPU8?: Uint8Array; // 메모리 버퍼 접근용
-  [key: string]: unknown; // 동적 속성 허용
+  
+  // 메모리 버퍼 접근용
+  HEAPU8: Uint8Array; 
+  HEAPF32?: Float32Array;
+  buffer?: ArrayBuffer;
+  asm?: any; 
+  
+  [key: string]: unknown;
 }
 
+// 규칙 기반 인식기 (Rule-based)
 interface SignRecognizerInstance {
   initialize: () => boolean;
-  recognize: (
-    landmarks: VectorHandLandmarkInstance
-  ) => RecognitionResultInstance;
   recognizeFromPointer: (landmarksPtr: number, count: number) => string;
   setDetectionThreshold: (threshold: number) => void;
   setRecognitionThreshold: (threshold: number) => void;
   getVersion: () => string;
 }
 
-interface HandLandmarkInstance {
-  x: number;
-  y: number;
-  z: number;
+// 딥러닝 인식기 (MLP)
+interface SignRecognitionInstance {
+  setScaler: (mean: VectorFloatInstance, scale: VectorFloatInstance) => void;
+  predictMLP: (features: VectorFloatInstance) => number;
 }
 
-interface RecognitionResultInstance {
-  gesture: string;
-  confidence: number;
-  id: number;
-}
-
-interface VectorHandLandmarkInstance {
-  push_back: (landmark: HandLandmarkInstance) => void;
+// C++ Vector 바인딩
+interface VectorFloatInstance {
+  push_back: (value: number) => void;
   size: () => number;
-  get: (index: number) => HandLandmarkInstance;
+  get: (index: number) => number;
   delete: () => void;
 }
 
@@ -62,252 +62,85 @@ declare global {
 
 export class WASMSignRecognizer {
   private wasmModule: WasmModule | null = null;
-  private recognizer: SignRecognizerInstance | null = null;
+  private recognizer: SignRecognizerInstance | null = null;      // Rule-based
+  private mlpRecognizer: SignRecognitionInstance | null = null; // MLP
   private isInitialized: boolean = false;
 
-  /**
-   * WASM 모듈 로드 및 초기화
-   */
+  // 메모리 재사용을 위한 캐시 (GC 방지)
+  private memoryPool: number[] = [];
+  private landmarkDataCache = new Float32Array(42); // 한 손(21개 * 2좌표) 캐시
+
   async initialize(): Promise<boolean> {
     try {
-      if (typeof window === "undefined") {
-        console.warn("브라우저 환경이 아닙니다");
-        return false;
-      }
+      if (typeof window === "undefined") return false;
 
-      // WASM 모듈 로드
-      // 스크립트가 이미 로드되어 있는지 확인
+      // 1. WASM 스크립트 로드
       if (typeof CreateSignWasmModule === "undefined") {
-        // 스크립트 태그를 사용하여 WASM 모듈 로드
         const script = document.createElement("script");
         script.src = "/wasm/sign_wasm.js";
-
-        console.log("📥 WASM 스크립트 로드 시작:", script.src);
         await new Promise<void>((resolve, reject) => {
-          script.onload = () => {
-            console.log("✅ WASM 스크립트 로드 완료");
-            // 전역 함수가 로드될 때까지 대기
-            let checkCount = 0;
-            const checkInterval = setInterval(() => {
-              checkCount++;
-              if (typeof CreateSignWasmModule !== "undefined") {
-                console.log(
-                  `✅ CreateSignWasmModule 함수 발견 (${checkCount}회 시도)`
-                );
-                clearInterval(checkInterval);
-                resolve();
-              }
-              if (checkCount > 1000) {
-                clearInterval(checkInterval);
-                reject(
-                  new Error("CreateSignWasmModule 함수를 찾을 수 없습니다")
-                );
-              }
-            }, 10);
-
-            // 타임아웃
-            setTimeout(() => {
-              clearInterval(checkInterval);
-              reject(
-                new Error(`WASM 모듈 로드 타임아웃 (${checkCount}회 시도 후)`)
-              );
-            }, 10000);
-          };
-          script.onerror = (error) => {
-            console.error("❌ WASM 스크립트 로드 실패:", script.src, error);
-            reject(new Error(`WASM 스크립트 로드 실패: ${script.src}`));
-          };
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error("WASM script load failed"));
           document.head.appendChild(script);
         });
-      }
-
-      // WASM 모듈 생성
-      console.log("🔄 WASM 모듈 생성 시작...");
-      let moduleResult;
-      try {
-        moduleResult = await CreateSignWasmModule({
-          locateFile: (path: string) => {
-            const wasmPath = path.endsWith(".wasm") ? `/wasm/${path}` : path;
-            console.log(`📍 WASM 파일 경로: ${wasmPath}`);
-            return wasmPath;
-          },
-        });
-      } catch (error) {
-        console.error("❌ CreateSignWasmModule 호출 실패:", error);
-        throw error;
-      }
-
-      // 모듈이 Promise를 반환할 수 있으므로 확인
-      if (moduleResult instanceof Promise) {
-        console.log("🔄 WASM 모듈 Promise 대기 중...");
-        this.wasmModule = await moduleResult;
-      } else {
-        this.wasmModule = moduleResult;
-      }
-
-      if (!this.wasmModule) {
-        console.error("❌ WASM 모듈 생성 실패: 모듈이 null입니다");
-        return false;
-      }
-
-      console.log("✅ WASM 모듈 로드 성공");
-
-      // 모듈이 완전히 초기화될 때까지 대기 (필요한 클래스들이 로드될 때까지)
-      console.log("🔄 WASM 모듈 초기화 대기 중...");
-      let retries = 0;
-      const maxRetries = 50; // 최대 5초 대기
-      while (
-        retries < maxRetries &&
-        (!this.wasmModule.SignRecognizer ||
-          typeof this.wasmModule.SignRecognizer !== "function")
-      ) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        retries++;
-        if (retries % 10 === 0) {
-          console.log(`⏳ 초기화 대기 중... (${retries}/${maxRetries})`);
+        
+        // 전역 함수 로드 대기
+        let count = 0;
+        while(typeof CreateSignWasmModule === "undefined" && count < 50) {
+            await new Promise(r => setTimeout(r, 50));
+            count++;
         }
       }
 
-      // 필요한 클래스들이 로드되었는지 확인
-      if (
-        !this.wasmModule.SignRecognizer ||
-        typeof this.wasmModule.SignRecognizer !== "function"
-      ) {
-        console.error("❌ SignRecognizer 클래스를 찾을 수 없습니다");
-        console.error(
-          "사용 가능한 키:",
-          Object.keys(this.wasmModule).slice(0, 30)
-        );
-        console.error("모듈 타입:", typeof this.wasmModule);
-        return false;
-      }
+      // 2. 모듈 생성
+      console.log("🔄 WASM 모듈 생성 중...");
+      this.wasmModule = await CreateSignWasmModule({
+        locateFile: (path) => path.endsWith(".wasm") ? `/wasm/${path}` : path
+      });
 
-      // VectorHandLandmark와 HandLandmark는 register_vector로 등록되지만
-      // 생성자로 직접 사용할 수 없습니다. recognizeFromPointer를 사용하므로
-      // 이들은 필요하지 않습니다.
+      if (!this.wasmModule) throw new Error("Module is null");
 
-      // recognizeFromPointer를 사용하기 위해 필요한 함수들 확인
-      if (
-        !this.wasmModule._malloc ||
-        typeof this.wasmModule._malloc !== "function"
-      ) {
-        console.error("❌ _malloc 함수를 찾을 수 없습니다");
-        console.error(
-          "사용 가능한 키:",
-          Object.keys(this.wasmModule).slice(0, 30)
-        );
-        return false;
-      }
-
-      if (
-        !this.wasmModule._free ||
-        typeof this.wasmModule._free !== "function"
-      ) {
-        console.error("❌ _free 함수를 찾을 수 없습니다");
-        console.error(
-          "사용 가능한 키:",
-          Object.keys(this.wasmModule).slice(0, 30)
-        );
-        return false;
-      }
-
-      // SignRecognizer 인스턴스 생성
-      try {
-        this.recognizer = new this.wasmModule.SignRecognizer();
-        console.log("✅ SignRecognizer 인스턴스 생성 성공");
-        console.log("recognizer 메서드:", Object.keys(this.recognizer));
-        console.log(
-          "recognizeFromPointer 타입:",
-          typeof this.recognizer.recognizeFromPointer
-        );
-      } catch (error) {
-        console.error("❌ SignRecognizer 인스턴스 생성 실패:", error);
-        return false;
-      }
-
-      if (!this.recognizer) {
-        console.error("❌ SignRecognizer 인스턴스가 null입니다");
-        return false;
-      }
-
-      // recognizeFromPointer 메서드 확인 (경고만, 계속 진행)
-      if (
-        !this.recognizer.recognizeFromPointer ||
-        typeof this.recognizer.recognizeFromPointer !== "function"
-      ) {
-        console.warn("⚠️ recognizeFromPointer 메서드를 찾을 수 없습니다");
-        console.warn("사용 가능한 메서드:", Object.keys(this.recognizer));
-        console.warn(
-          "recognizer 프로토타입:",
-          Object.getPrototypeOf(this.recognizer)
-        );
-        // 계속 진행 (런타임에 다시 확인)
+      // 3. 인스턴스 생성
+      // (A) 규칙 기반
+      if (this.wasmModule.SignRecognizer) {
+          this.recognizer = new this.wasmModule.SignRecognizer();
+          this.recognizer.initialize();
+          this.recognizer.setDetectionThreshold(0.5);
+          this.recognizer.setRecognitionThreshold(0.7);
+          console.log("✅ Rule-based Recognizer initialized");
       } else {
-        console.log("✅ recognizeFromPointer 메서드 확인됨");
+          console.error("❌ SignRecognizer class not found");
       }
 
-      try {
-        const initResult = this.recognizer.initialize();
-        if (!initResult) {
-          console.error(
-            "❌ SignRecognizer.initialize()가 false를 반환했습니다"
-          );
-          return false;
-        }
-      } catch (error) {
-        console.error("❌ SignRecognizer 초기화 중 오류:", error);
-        return false;
+      // (B) 딥러닝 기반
+      if (this.wasmModule.SignRecognition) {
+          this.mlpRecognizer = new this.wasmModule.SignRecognition();
+          console.log("✅ MLP Recognizer initialized");
+      } else {
+          console.warn("⚠️ SignRecognition class not found (MLP disabled)");
       }
-
-      // 임계값 설정
-      this.recognizer.setDetectionThreshold(0.5);
-      this.recognizer.setRecognitionThreshold(0.7);
 
       this.isInitialized = true;
-      console.log("WASM 인식기 초기화 완료:", this.recognizer.getVersion());
       return true;
+
     } catch (error) {
-      console.error("WASM 초기화 실패:", error);
+      console.error("❌ WASM Init Failed:", error);
       return false;
     }
   }
 
-  /**
-   * 랜드마크로부터 제스처 인식
-   * VectorHandLandmark가 사용 불가능하므로 recognizeFast를 사용
-   */
-  async recognize(landmarks: HandLandmark[]): Promise<RecognitionResult> {
-    // recognizeFast를 사용 (더 빠르고 안정적)
-    return this.recognizeFast(landmarks);
-  }
-
-  private memoryPool: number[] = []; // 메모리 풀로 할당 최적화
-  private landmarkDataCache = new Float32Array(42); // 재사용 가능한 배열
-
-  /**
-   * 랜드마크로부터 제스처 인식 (포인터 사용 - 최적화됨)
-   */
-  async recognizeFast(landmarks: HandLandmark[]): Promise<RecognitionResult> {
+  // ============================================================
+  // 1. 규칙 기반 인식 (Rule-based) - [메모리 에러 해결 버전]
+  // ============================================================
+  async recognizeFast(landmarks: any[]): Promise<RecognitionResult> {
     if (!this.isInitialized || !this.recognizer || !this.wasmModule) {
-      return {
-        gesture: "감지되지 않음",
-        confidence: 0.0,
-        id: 0,
-      };
+      return { gesture: "초기화 안됨", confidence: 0, id: 0 };
     }
 
-    // HEAPF32 캐싱
-    const HEAPF32 = this.wasmModule.HEAPF32;
-    if (!HEAPF32) {
-      return {
-        gesture: "감지되지 않음",
-        confidence: 0.0,
-        id: 0,
-      };
-    }
+    let ptr = 0;
 
     try {
-      // 캐시된 배열 재사용 (메모리 할당 최소화)
+      // 1. 데이터 준비 (x, y 좌표만 추출하여 캐시에 담기)
       for (let i = 0; i < 21; i++) {
         if (landmarks[i]) {
           this.landmarkDataCache[i * 2] = landmarks[i].x;
@@ -318,200 +151,180 @@ export class WASMSignRecognizer {
         }
       }
 
-      // 메모리 풀 사용 (할당/해제 최적화)
-      let landmarksPtr = this.memoryPool.pop();
-      if (!landmarksPtr) {
-        landmarksPtr = this.wasmModule._malloc(42 * 4); // 새로 할당
-        if (landmarksPtr === 0) {
-          throw new Error("메모리 할당 실패");
-        }
-      }
-
-      // 빠른 메모리 복사
-      HEAPF32.set(this.landmarkDataCache, landmarksPtr / 4);
-
-      // recognizeFromPointer 호출 (로깅 최소화)
-      if (!this.recognizer.recognizeFromPointer) {
-        this.memoryPool.push(landmarksPtr); // 메모리 풀에 반환
-        throw new Error("recognizeFromPointer 함수 없음");
-      }
-
-      const resultJson = this.recognizer.recognizeFromPointer(landmarksPtr, 42);
-      
-      // 메모리 풀에 반환 (해제 대신)
-      if (this.memoryPool.length < 5) { // 최대 5개까지 풀링
-        this.memoryPool.push(landmarksPtr);
+      // 2. 메모리 할당 (풀 사용 or 신규 할당)
+      // *주의: _malloc 호출 시 내부적으로 메모리 확장(Resize)이 일어날 수 있음
+      if (this.memoryPool.length > 0) {
+        ptr = this.memoryPool.pop()!;
       } else {
-        this.wasmModule._free(landmarksPtr);
+        ptr = this.wasmModule._malloc(42 * 4); // 42 floats * 4 bytes
       }
 
-      // 빠른 JSON 파싱 (try-catch 최소화)
-      return JSON.parse(resultJson) as RecognitionResult;
-    } catch (error) {
-      return {
-        gesture: "감지되지 않음",
-        confidence: 0.0,
-        id: 0,
-      };
+      if (ptr === 0) throw new Error("Memory allocation failed");
+
+      // 3. [핵심] 최신 버퍼 직접 가져오기 (Direct Memory Access)
+      // HEAPF32 전역 변수는 메모리 확장 시 끊어지므로(Detached), 항상 최신 buffer를 조회해야 함
+      let buffer: ArrayBuffer | undefined;
+      
+      // Emscripten은 HEAPU8을 자동으로 갱신하므로 가장 신뢰할 수 있음
+      if (this.wasmModule.HEAPU8 && this.wasmModule.HEAPU8.buffer) {
+          buffer = this.wasmModule.HEAPU8.buffer as ArrayBuffer;
+      } else if (this.wasmModule.buffer) {
+          buffer = this.wasmModule.buffer;
+      } else if (this.wasmModule.asm && this.wasmModule.asm.memory) {
+          buffer = this.wasmModule.asm.memory.buffer;
+      }
+
+      if (!buffer) throw new Error("WASM Memory buffer not found");
+
+      // 4. 해당 포인터 위치에 뷰(View)를 생성하여 데이터 복사
+      // new Float32Array(buffer, byteOffset, length)
+      const wasmView = new Float32Array(buffer, ptr, 42);
+      wasmView.set(this.landmarkDataCache);
+
+      // 5. C++ 인식 함수 호출
+      const resultJson = this.recognizer.recognizeFromPointer(ptr, 42);
+      
+      // 6. 메모리 반환 (풀링)
+      if (this.memoryPool.length < 50) {
+        this.memoryPool.push(ptr);
+      } else {
+        this.wasmModule._free(ptr);
+      }
+
+      return JSON.parse(resultJson);
+
+    } catch (e) {
+      console.error("Rule-based Error:", e);
+      // 에러 발생 시 해당 메모리는 해제 (풀에 넣지 않음)
+      if (ptr !== 0 && this.wasmModule) {
+        try { this.wasmModule._free(ptr); } catch(freeErr) {}
+      }
+      return { gesture: "메모리 에러", confidence: 0, id: 0 };
     }
   }
 
-  /**
-   * 레거시 느린 버전 (비교용)
-   */
-  async recognizeFromPointerSlow(landmarks: HandLandmark[]): Promise<RecognitionResult> {
-    if (!this.isInitialized || !this.recognizer || !this.wasmModule) {
-      return {
-        gesture: "감지되지 않음",
-        confidence: 0.0,
-        id: 0,
-      };
-    }
+  // ============================================================
+  // 2. 딥러닝 인식 (MLP) - [기존 로직 100% 이식]
+  // ============================================================
+  public setScaler(mean: number[], scale: number[]): void {
+    if (!this.mlpRecognizer || !this.wasmModule?.VectorFloat) return;
 
-    // HEAPF32 접근 방법 개선
-    let HEAPF32: Float32Array | undefined = this.wasmModule.HEAPF32;
+    const vecMean = new this.wasmModule.VectorFloat();
+    const vecScale = new this.wasmModule.VectorFloat();
 
-    // HEAPF32가 없으면 동적으로 접근 시도
-    if (!HEAPF32) {
-      try {
-        // 모듈에서 직접 접근 시도
-        HEAPF32 = this.wasmModule.HEAPF32;
+    mean.forEach(v => vecMean.push_back(v));
+    scale.forEach(v => vecScale.push_back(v));
 
-        // 여전히 없으면 HEAPU8 버퍼로부터 생성
-        if (!HEAPF32 && this.wasmModule.HEAPU8?.buffer) {
-          HEAPF32 = new Float32Array(this.wasmModule.HEAPU8.buffer);
-          console.log("✅ HEAPF32를 HEAPU8 버퍼로부터 생성");
-        }
-      } catch (error) {
-        console.warn("HEAPF32 접근 중 오류:", error);
-      }
-    }
-
-    // HEAPF32가 없으면 오류 반환
-    if (!HEAPF32) {
-      console.error("❌ HEAPF32를 찾을 수 없습니다");
-      return {
-        gesture: "감지되지 않음",
-        confidence: 0.0,
-        id: 0,
-      };
-    }
-
-    try {
-      // 랜드마크를 Float32Array로 변환 (21개 * 2 = 42개 float)
-      const landmarkData = new Float32Array(42);
-      for (let i = 0; i < 21; i++) {
-        if (landmarks[i]) {
-          landmarkData[i * 2] = landmarks[i].x;
-          landmarkData[i * 2 + 1] = landmarks[i].y;
-        }
-      }
-
-      // WASM 메모리에 할당
-      const landmarksPtr = this.wasmModule._malloc(landmarkData.length * 4); // float = 4 bytes
-
-      if (landmarksPtr === 0) {
-        throw new Error("메모리 할당 실패");
-      }
-
-      // 메모리에 데이터 복사
-      HEAPF32.set(landmarkData, landmarksPtr / 4);
-
-      // 인식 수행
-      console.log("🔄 WASM recognizeFromPointer 호출 중...");
-      console.log("recognizer:", this.recognizer);
-      console.log(
-        "recognizeFromPointer:",
-        this.recognizer.recognizeFromPointer
-      );
-      console.log("타입:", typeof this.recognizer.recognizeFromPointer);
-      console.log("사용 가능한 메서드:", Object.keys(this.recognizer));
-
-      // recognizeFromPointer가 없거나 함수가 아닌 경우
-      if (
-        !this.recognizer.recognizeFromPointer ||
-        typeof this.recognizer.recognizeFromPointer !== "function"
-      ) {
-        console.error(
-          "❌ recognizeFromPointer가 함수가 아닙니다. 사용 가능한 메서드:",
-          Object.keys(this.recognizer)
-        );
-        // 메모리 해제
-        this.wasmModule._free(landmarksPtr);
-        throw new Error(
-          "recognizeFromPointer가 함수가 아닙니다. 사용 가능한 메서드: " +
-            Object.keys(this.recognizer).join(", ")
-        );
-      }
-
-      let resultJson: string;
-      try {
-        resultJson = this.recognizer.recognizeFromPointer(landmarksPtr, 42);
-        console.log("✅ WASM 인식 결과:", resultJson);
-      } catch (error) {
-        // 메모리 해제
-        this.wasmModule._free(landmarksPtr);
-        throw error;
-      }
-
-      // 메모리 해제
-      this.wasmModule._free(landmarksPtr);
-
-      // JSON 파싱
-      const result = JSON.parse(resultJson) as RecognitionResult;
-      console.log("✅ WASM 인식 완료:", result);
-      return result;
-    } catch (error) {
-      console.error("WASM 인식 오류:", error);
-
-      return {
-        gesture: "감지되지 않음",
-        confidence: 0.0,
-        id: 0,
-      };
-    }
-  }
-
-  /**
-   * 임계값 설정
-   */
-  setDetectionThreshold(threshold: number): void {
-    if (this.recognizer) {
-      this.recognizer.setDetectionThreshold(threshold);
-    }
-  }
-
-  setRecognitionThreshold(threshold: number): void {
-    if (this.recognizer) {
-      this.recognizer.setRecognitionThreshold(threshold);
-    }
-  }
-
-  /**
-   * 버전 정보
-   */
-  getVersion(): string {
-    if (this.recognizer) {
-      return this.recognizer.getVersion();
-    }
-    return "N/A";
-  }
-
-  /**
-   * 리소스 정리
-   */
-  dispose(): void {
-    // 메모리 풀 정리
-    if (this.wasmModule) {
-      this.memoryPool.forEach(ptr => {
-        this.wasmModule?._free(ptr);
-      });
-    }
-    this.memoryPool = [];
+    this.mlpRecognizer.setScaler(vecMean, vecScale);
     
-    // WASM 모듈은 자동으로 정리됨
-    this.recognizer = null;
-    this.wasmModule = null;
-    this.isInitialized = false;
+    vecMean.delete();
+    vecScale.delete();
+  }
+
+  public predictWithMLP(results: any): number {
+    if (!this.mlpRecognizer || !this.wasmModule?.VectorFloat) return -1;
+
+    // 1. MediaPipe 결과를 126차원 벡터로 변환 (정규화 + 정렬 포함)
+    // [중요] 여기에 this.convertLandmarksToVector 호출이 있습니다.
+    const features = this.convertLandmarksToVector(results);
+
+    // 2. C++ Vector 생성 및 데이터 주입
+    const inputVec = new this.wasmModule.VectorFloat();
+    for (const v of features) {
+      inputVec.push_back(v);
+    }
+
+    let result = -1;
+    try {
+        // 3. 추론 실행
+        result = this.mlpRecognizer.predictMLP(inputVec);
+    } catch(e) {
+        console.error("MLP Error:", e);
+    }
+    
+    inputVec.delete();
+    return result;
+  }
+
+  // [핵심] 기존 sign-language-estimator.js의 로직 완벽 이식
+  // 왼손(0~62), 오른손(63~125) 순서로 채워넣음
+  private convertLandmarksToVector(results: any): number[] {
+    const vec: number[] = []; // 결과 벡터 (빈 배열로 시작)
+
+    // 데이터가 없으면 0으로 126개 채워서 반환
+    if (!results || !results.multiHandLandmarks || !results.multiHandedness) {
+      return new Array(126).fill(0.0);
+    }
+
+    let leftPts: any = null;
+    let rightPts: any = null;
+
+    // 1. 손 분류 (MediaPipe 라벨 기준)
+    for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+      const label = results.multiHandedness[i]?.label;
+      if (label === "Left") leftPts = results.multiHandLandmarks[i];
+      if (label === "Right") rightPts = results.multiHandLandmarks[i];
+    }
+
+    // 2. 왼손 처리 (0~62 인덱스)
+    if (leftPts) {
+      const norm = this.normalizeLandmarks(leftPts);
+      for (const p of norm) {
+        vec.push(p.x, p.y, p.z);
+      }
+    } else {
+      // 왼손 없으면 0.0으로 63개 채움
+      for (let i = 0; i < 63; i++) vec.push(0.0);
+    }
+
+    // 3. 오른손 처리 (63~125 인덱스)
+    if (rightPts) {
+      const norm = this.normalizeLandmarks(rightPts);
+      for (const p of norm) {
+        vec.push(p.x, p.y, p.z);
+      }
+    } else {
+      // 오른손 없으면 0.0으로 63개 채움
+      for (let i = 0; i < 63; i++) vec.push(0.0);
+    }
+
+    return vec;
+  }
+
+  // [핵심] 정규화 함수 (기존 로직 이식)
+  // 손목을 (0,0,0)으로 이동하고 크기 스케일링
+  private normalizeLandmarks(pts: any[]): {x:number, y:number, z:number}[] {
+    if (!pts || pts.length === 0) return [];
+
+    // 1. 중심 이동 (손목 기준)
+    const base = pts[0];
+    const centered = pts.map(p => ({
+      x: p.x - base.x,
+      y: p.y - base.y,
+      z: (p.z || 0) - (base.z || 0)
+    }));
+
+    // 2. 크기 스케일링 (손목 ~ 중지 기저부 거리 기준)
+    const ref = centered[9];
+    const scale = Math.sqrt(ref.x * ref.x + ref.y * ref.y + ref.z * ref.z) || 1.0;
+
+    return centered.map(p => ({
+      x: p.x / scale,
+      y: p.y / scale,
+      z: p.z / scale
+    }));
+  }
+  
+  dispose() {
+      if (this.wasmModule) {
+          this.memoryPool.forEach(ptr => {
+            try { this.wasmModule?._free(ptr); } catch(e) {}
+          });
+      }
+      this.memoryPool = [];
+      this.recognizer = null;
+      this.mlpRecognizer = null;
+      this.wasmModule = null;
+      this.isInitialized = false;
   }
 }

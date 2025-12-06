@@ -2,9 +2,7 @@
 #include <cmath>
 #include <algorithm>
 #include <sstream>
-#include <random>
-#include <numeric>
-#include <immintrin.h> // SIMD 최적화용
+#include "gesture_weights.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -486,3 +484,64 @@ std::string SignRecognizer::getVersion() const {
     return "1.0.0";
 }
 
+// 생성자
+SignRecognition::SignRecognition() {
+    mean.resize(D_IN, 0.0f);
+    scale.resize(D_IN, 1.0f);
+}
+
+// 소멸자
+SignRecognition::~SignRecognition() {}
+
+// Scaler 설정 구현
+void SignRecognition::setScaler(const std::vector<float>& meanArr, const std::vector<float>& scaleArr) {
+    if (meanArr.size() == D_IN) mean = meanArr;
+    if (scaleArr.size() == D_IN) scale = scaleArr;
+}
+
+// MLP 예측 구현
+int SignRecognition::predictMLP(const std::vector<float>& featureArr) {
+    if (featureArr.size() != D_IN) return -1;
+
+    // 1. Scaler 적용
+    float x[D_IN];
+    for (int i = 0; i < D_IN; ++i) {
+        x[i] = (featureArr[i] - mean[i]) / scale[i];
+    }
+
+    // 2. Layer 1
+    float h1[H1];
+    for (int i = 0; i < H1; ++i) {
+        float sum = B1[i];
+        for (int j = 0; j < D_IN; ++j) sum += W1[i * D_IN + j] * x[j];
+        h1[i] = std::max(sum, 0.f);
+    }
+
+    // 3. Layer 2
+    float h2[H2];
+    for (int i = 0; i < H2; ++i) {
+        float sum = B2[i];
+        for (int j = 0; j < H1; ++j) sum += W2[i * H1 + j] * h1[j];
+        h2[i] = std::max(sum, 0.f);
+    }
+
+    // 4. Output Layer
+    float logits[NUM_CLASSES];
+    for (int i = 0; i < NUM_CLASSES; ++i) {
+        float sum = B3[i];
+        for (int j = 0; j < H2; ++j) sum += W3[i * H2 + j] * h2[j];
+        logits[i] = sum;
+    }
+
+    // 5. Argmax
+    int argmax = 0;
+    float best = logits[0];
+    for (int i = 1; i < NUM_CLASSES; ++i) {
+        if (logits[i] > best) {
+            best = logits[i];
+            argmax = i;
+        }
+    }
+
+    return argmax;
+}

@@ -4,6 +4,9 @@
 #include <emscripten/bind.h>
 #include <vector>
 #include <string>
+#include <cmath>
+#include <algorithm>
+#include <iostream>
 
 // 손 랜드마크 구조체
 struct HandLandmark {
@@ -94,5 +97,26 @@ private:
 };
 
 // Embind 바인딩은 main.cpp에서 처리
+
+class SignRecognition {
+public:
+    SignRecognition();
+    ~SignRecognition();
+
+    // MLP 모델 예측 함수 (선언만)
+    int predictMLP(const std::vector<float>& featureArr);
+
+    // Scaler 설정 함수 (선언만)
+    void setScaler(const std::vector<float>& meanArr, const std::vector<float>& scaleArr);
+
+private:
+    static constexpr int D_IN = 126;
+    static constexpr int H1 = 128;
+    static constexpr int H2 = 64;
+    static constexpr int NUM_CLASSES = 4;
+
+    std::vector<float> mean;
+    std::vector<float> scale;
+};
 
 #endif // SIGN_RECOGNITION_H

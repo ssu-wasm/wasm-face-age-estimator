@@ -75,5 +75,16 @@ EMSCRIPTEN_BINDINGS(sign_wasm_module) {
     
     // std::vector<HandLandmark> 바인딩
     register_vector<HandLandmark>("VectorHandLandmark");
+
+    // std::vector<float>를 JS 배열과 호환되게 등록
+    register_vector<float>("VectorFloat");
+
+    class_<SignRecognition>("SignRecognition")
+        .constructor<>()
+
+        // MLP 함수 바인딩
+        .function("setScaler", &SignRecognition::setScaler)
+        .function("predictMLP", &SignRecognition::predictMLP)
+        ;
 }
 
