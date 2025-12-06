@@ -124,10 +124,16 @@ pnpm run dev
 - 실시간 손 추적 및 정규화
 
 ### 2. 제스처 인식 (C++ WASM)
+**2.1 규칙 기반 (Rule-based)**
+- 직관적인 손 모양(가위바위보 등)은 기하학적 계산으로 빠르게 처리합니다.
+- Finger State: 각 손가락의 굽힘/펴짐 상태 판별 (tip.y < pip.y)
+- Vector Analysis: 손가락 간의 각도 및 거리 계산
 
-- **규칙 기반 분류**: 손가락 펼침/굽힘 상태 분석
-- **기하학적 계산**: 랜드마크 간 거리 및 각도 계산
-- **신뢰도 기반 필터링**: 임계값 기반 결과 검증
+**2.2 딥러닝 기반 (MLP - Multi Layer Perceptron)**
+- 규칙으로 정의하기 복잡한 미세한 제스처는 학습된 신경망이 처리합니다.
+- **구조** : Input(63) → Hidden1(30) → Hidden2(20) → Output(Class)
+- **경량화** : PyTorch로 학습된 가중치를 gesture_weights.h 헤더 파일로 변환하여 C++에 직접 임베딩 (별도 모델 파일 로딩 불필요)
+- **전처리** : 입력 랜드마크의 정규화(Normalization) 및 상대 좌표 변환
 
 ```cpp
 // 핵심 인식 로직
@@ -140,26 +146,31 @@ RecognitionResult recognizeByRules(landmarks) {
     // 패턴 매칭을 통한 제스처 분류
     // 신뢰도 계산 및 반환
 }
+
+int SignRecognition::predictMLP(const std::vector<float>& featureArr) {
+    // 1. 정규화 (Scaler)
+    // 2. 순전파 (Forward Propagation)
+    // 3. Argmax로 결과 도출
+    return argmax;
+}
 ```
 
 ### 3. 실시간 처리 파이프라인
 
 ```
-카메라 스트림 → MediaPipe Hands → 21개 랜드마크 → WASM 제스처 인식 → 결과 표시
-    ↓              ↓                    ↓                ↓               ↓
-브라우저 API    JavaScript        Float32Array      C++ 알고리즘    JSON 응답
+카메라 스트림  →  MediaPipe Hands  →   21개 랜드마크  →   WASM 제스처 인식  →  결과 표시
+    ↓                ↓                    ↓                 ↓                ↓
+브라우저 API      JavaScript          Float32Array      C++ 알고리즘        JSON 응답
 ```
 
 ## 🎨 UI 기능
 
 ### 실시간 시각화
-
 - **손 랜드마크**: 21개 포인트 실시간 표시
 - **연결선**: MediaPipe Hand 구조를 따른 정확한 손 모양 시각화
 - **제스처 결과**: 인식된 제스처명, 신뢰도, ID 표시
 
 ### 제어 기능
-
 - **카메라 활성화**: 웹캠 접근 및 스트림 시작
 - **AI 인식 시작/중단**: 실시간 제스처 인식 제어
 - **성능 모니터링**: FPS 및 프레임 처리 시간 표시
@@ -169,23 +180,18 @@ RecognitionResult recognizeByRules(landmarks) {
 ### 1. WASM 바인딩 문제
 - **문제** : `this.recognizer.recognizeFromPointer is not a function`
 - **해결** : SignRecognizerWrapper 클래스로 포인터 타입 바인딩 문제 해결
-
 ### 2. WASM 메모리 관리 및 힙(Heap) 접근
 - **문제** : JS의 배열을 C++로 전달할 때 메모리 주소 불일치 및 오버헤드 발생
 - **해결** : `Module.HEAPF32`를 사용하여 공유 메모리 버퍼에 직접 접근, 데이터 복사 비용 최소화
-
 ### 3. MediaPipe 타입 정의
 - **문제** : TypeScript에서 MediaPipe 타입 인식 불가
 - **해결** : 동적 import 및 커스텀 인터페이스 정의
-
 ### 4. 실시간 성능 최적화
 - **문제** : 프레임 처리 지연
 - **해결** : requestAnimationFrame 기반 비동기 처리
-
 ### 5. 하이브리드 구조 설계
 - **문제** : 규칙 기반과 딥러닝 모델의 결과가 충돌할 경우 처리 곤란
 - **해결** : 우선순위 큐(Priority Queue) 방식 도입. 명확한 규칙이 매칭되면 우선 처리하고, 모호한 경우 MLP의 신뢰도(Confidence) 점수를 기반으로 판단
-
 ### 6. Next.js와 WASM의 호환성
 - **문제** : SSR(Server Side Rendering) 환경에서 브라우저 전용 API인 WASM 로딩 실패
 - **해결** : useEffect와 동적 임포트(dynamic import)를 활용하여 클라이언트 사이드에서만 WASM이 초기화되도록 생명주기 관리
