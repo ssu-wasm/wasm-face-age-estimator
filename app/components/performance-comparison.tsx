@@ -134,7 +134,7 @@ export default function PerformanceComparison({
             <h4>🚀 대용량 데이터 성능 결과 (1050개 랜드마크)</h4>
             <div className={styles.resultsGrid}>
               <div className={styles.resultSection}>
-                <h5>WASM (청크 처리)</h5>
+                <h5>WASM</h5>
                 <p>평균: {largeDataResult.wasm.avgTime.toFixed(2)}ms</p>
                 <p>최소: {largeDataResult.wasm.minTime.toFixed(2)}ms</p>
                 <p>최대: {largeDataResult.wasm.maxTime.toFixed(2)}ms</p>
@@ -142,7 +142,7 @@ export default function PerformanceComparison({
               </div>
 
               <div className={styles.resultSection}>
-                <h5>JavaScript (배치 처리)</h5>
+                <h5>JavaScript</h5>
                 <p>평균: {largeDataResult.javascript.avgTime.toFixed(2)}ms</p>
                 <p>최소: {largeDataResult.javascript.minTime.toFixed(2)}ms</p>
                 <p>최대: {largeDataResult.javascript.maxTime.toFixed(2)}ms</p>

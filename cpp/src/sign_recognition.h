@@ -76,8 +76,6 @@ private:
     // 고급 ML 스타일 인식 (최적화된 C++ 버전)
     RecognitionResult recognizeWithAdvancedML(const std::vector<HandLandmark>& landmarks);
     
-    // 대용량 행렬 곱셈 기반 고급 수화 인식 (1260개 특징)
-    RecognitionResult recognizeWithAdvancedMatrixML(const std::vector<HandLandmark>& landmarks);
     
     // 특징 추출
     std::vector<float> extractComplexFeatures(const std::vector<HandLandmark>& landmarks);

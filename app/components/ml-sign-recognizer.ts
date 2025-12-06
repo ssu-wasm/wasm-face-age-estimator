@@ -162,11 +162,17 @@ export class MLSignRecognizer {
 
   /**
    * 대용량 랜드마크 처리 버전 (배치 처리)
+   * WASM recognizeFast 사용으로 성능 최적화
    */
-  public recognizeWithLargeDatasetJS(
+  public async recognizeWithLargeDatasetJS(
     landmarks: HandLandmark[]
-  ): MLRecognitionResult | null {
+  ): Promise<MLRecognitionResult | null> {
     if (landmarks.length < 21) {
+      return { gesture: "감지되지 않음", confidence: 0.0, id: 0 };
+    }
+
+    // WASM이 초기화되지 않았으면 null 반환
+    if (!this.isModelLoaded || !this.wasmRecognizer) {
       return { gesture: "감지되지 않음", confidence: 0.0, id: 0 };
     }
 
@@ -190,11 +196,25 @@ export class MLSignRecognizer {
     let bestResult: MLRecognitionResult | null = null;
 
     for (const chunk of chunks) {
-      const result = this.recognizeWithAdvancedMLJS(chunk);
+      // WASM recognizeFast 사용 (더 빠른 성능)
+      //
+      // 🚀 WASM이 JavaScript보다 빠른 이유:
+      // 1. 네이티브 코드 컴파일: C++ → WASM으로 컴파일되어 네이티브 성능 제공
+      // 2. 직접 메모리 접근: HEAPU8/HEAPF32로 오버헤드 최소화
+      // 3. 타입 안정성: 컴파일 타임 최적화로 런타임 체크 불필요
+      // 4. 메모리 효율성: GC 압박 없음, 메모리 풀링으로 할당 비용 감소
+      // 5. SIMD 최적화: 벡터 연산 병렬 처리 가능
+      //
+      // 예상 성능: JavaScript 대비 2-3배 빠름
+      const result = await this.wasmRecognizer.recognizeFast(chunk);
       if (result && result.confidence > 0) {
         totalConfidence += result.confidence;
         if (!bestResult || result.confidence > bestResult.confidence) {
-          bestResult = result;
+          bestResult = {
+            gesture: result.gesture,
+            confidence: result.confidence,
+            id: result.id,
+          };
         }
       }
     }
@@ -256,195 +276,6 @@ export class MLSignRecognizer {
     return { gesture: "감지되지 않음", confidence: 0.0, id: 0 };
   }
 
-  /**
-   * 대용량 행렬 곱셈 기반 고급 수화 인식 (1260개 특징 사용)
-   * 진정한 수화 인식을 위한 복잡한 특징과 대용량 신경망 활용
-   */
-  public recognizeWithAdvancedMatrixML(
-    landmarks: HandLandmark[]
-  ): MLRecognitionResult | null {
-    if (landmarks.length !== 21) {
-      return { gesture: "감지되지 않음", confidence: 0.0, id: 0 };
-    }
-
-    console.time("🔥 Advanced Matrix ML");
-
-    try {
-      // 1. 고급 행렬 특징 추출 (1260개)
-      const features = this.extractAdvancedMatrixFeatures(landmarks);
-      console.log(`✅ 추출된 특징 수: ${features.length}`);
-
-      // 2. 대용량 행렬 곱셈 신경망 추론
-      const outputs = this.advancedMatrixNeuralNetwork(features);
-
-      // 3. 결과 해석
-      if (outputs.length < 5) {
-        return { gesture: "감지되지 않음", confidence: 0.0, id: 0 };
-      }
-
-      // 최대값과 인덱스 찾기
-      let maxIdx = 0;
-      let maxVal = outputs[0];
-      for (let i = 1; i < 5; i++) {
-        if (outputs[i] > maxVal) {
-          maxVal = outputs[i];
-          maxIdx = i;
-        }
-      }
-
-      // 소프트맥스 정규화
-      let sum = 0.0;
-      for (const val of outputs) {
-        sum += Math.exp(val);
-      }
-      const confidence = Math.exp(maxVal) / sum;
-
-      // 제스처 매핑
-      const gestures = ["감지되지 않음", "안녕하세요", "감사합니다", "예", "V"];
-
-      console.timeEnd("🔥 Advanced Matrix ML");
-
-      if (maxIdx < gestures.length) {
-        return { gesture: gestures[maxIdx], confidence, id: maxIdx };
-      }
-
-      return { gesture: "감지되지 않음", confidence: 0.0, id: 0 };
-    } catch (error) {
-      console.error("Advanced Matrix ML 오류:", error);
-      console.timeEnd("🔥 Advanced Matrix ML");
-      return { gesture: "감지되지 않음", confidence: 0.0, id: 0 };
-    }
-  }
-
-  /**
-   * 복잡한 행렬 곱셈을 활용한 고급 특징 추출 (1260개 특징)
-   * 수화 인식의 정확성을 위해 시공간적 패턴과 다중 손 인식 포함
-   */
-  private extractAdvancedMatrixFeatures(landmarks: HandLandmark[]): number[] {
-    const features: number[] = [];
-
-    // === 1. 기존 특징들 (256개) ===
-    // 모든 쌍의 거리 계산 (21 * 20 / 2 = 210개)
-    for (let i = 0; i < 21; i++) {
-      for (let j = i + 1; j < 21; j++) {
-        const dist = this.calculateDistanceExactCPP(landmarks[i], landmarks[j]);
-        features.push(dist);
-      }
-    }
-
-    // 각 포인트에서 손목까지의 거리 (20개)
-    const wrist = landmarks[0];
-    for (let i = 1; i < 21; i++) {
-      const dist = this.calculateDistanceExactCPP(landmarks[i], wrist);
-      features.push(dist);
-    }
-
-    // 각 손가락의 각도 계산 (5개)
-    const fingerTips = [4, 8, 12, 16, 20];
-    const fingerPips = [3, 6, 10, 14, 18];
-    const fingerMcps = [2, 5, 9, 13, 17];
-
-    for (let i = 0; i < 5; i++) {
-      const angle = this.calculateAngleExactCPP(
-        landmarks[fingerTips[i]],
-        landmarks[fingerPips[i]],
-        landmarks[fingerMcps[i]]
-      );
-      features.push(angle);
-    }
-
-    // 손바닥 방향 벡터 (2개)
-    let palmX = 0,
-      palmY = 0;
-    for (let i = 0; i < 5; i++) {
-      palmX += landmarks[i].x;
-      palmY += landmarks[i].y;
-    }
-    palmX /= 5;
-    palmY /= 5;
-    features.push(palmX, palmY);
-
-    // 곡률 계산 (19개)
-    for (let i = 1; i < 20; i++) {
-      const curvature = this.calculateAngleExactCPP(
-        landmarks[i - 1],
-        landmarks[i],
-        landmarks[i + 1]
-      );
-      features.push(curvature);
-    }
-
-    // === 2. 시공간적 특징 (420개) ===
-    // 손가락 관절의 3차원 벡터 분석
-    for (let finger = 0; finger < 5; finger++) {
-      const baseIdx = finger === 0 ? 1 : finger * 4 + 1; // 엄지는 특별 처리
-      for (let joint = 0; joint < 4; joint++) {
-        if (baseIdx + joint < 21) {
-          const landmark = landmarks[baseIdx + joint];
-
-          // 3D 위치 벡터
-          features.push(landmark.x, landmark.y, landmark.z);
-
-          // 속도 벡터 추정 (이전 프레임 대비)
-          const velocity = this.estimateVelocity(landmark, finger, joint);
-          features.push(velocity.x, velocity.y, velocity.z);
-
-          // 가속도 벡터 추정
-          const acceleration = this.estimateAcceleration(
-            landmark,
-            finger,
-            joint
-          );
-          features.push(acceleration.x, acceleration.y, acceleration.z);
-
-          // 회전 정보
-          const rotation = this.calculateRotation(landmark, wrist);
-          features.push(rotation.pitch, rotation.yaw, rotation.roll);
-
-          // 곡률 변화율
-          const curvatureRate = this.calculateCurvatureRate(
-            landmark,
-            finger,
-            joint
-          );
-          features.push(curvatureRate);
-        }
-      }
-    }
-
-    // === 3. 관계적 행렬 특징 (400개) ===
-    // 손가락 간 상호작용 행렬
-    const fingerInteractionMatrix =
-      this.calculateFingerInteractionMatrix(landmarks);
-    features.push(...this.flattenMatrix(fingerInteractionMatrix));
-
-    // 관절 연결성 행렬
-    const jointConnectivityMatrix =
-      this.calculateJointConnectivityMatrix(landmarks);
-    features.push(...this.flattenMatrix(jointConnectivityMatrix));
-
-    // === 4. 기하학적 불변성 특징 (200개) ===
-    // 크기 정규화된 특징
-    const scaleInvariantFeatures =
-      this.calculateScaleInvariantFeatures(landmarks);
-    features.push(...scaleInvariantFeatures);
-
-    // 회전 불변성 특징
-    const rotationInvariantFeatures =
-      this.calculateRotationInvariantFeatures(landmarks);
-    features.push(...rotationInvariantFeatures);
-
-    // === 5. 주파수 영역 특징 (184개) ===
-    // FFT 기반 주파수 분석
-    const frequencyFeatures = this.calculateFrequencyFeatures(landmarks);
-    features.push(...frequencyFeatures);
-
-    // 특징 정규화 (대용량 특징에 최적화)
-    this.normalizeFeatures(features);
-
-    return features; // 총 1260개 특징
-  }
-
   private extractComplexFeaturesExactCPP(landmarks: HandLandmark[]): number[] {
     // 기존 간단한 특징 추출 (호환성 유지)
     const features: number[] = [];
@@ -478,212 +309,6 @@ export class MLSignRecognizer {
     return features;
   }
 
-  // === 고급 특징 추출을 위한 헬퍼 메서드들 ===
-
-  private estimateVelocity(
-    landmark: HandLandmark,
-    finger: number,
-    joint: number
-  ): HandLandmark {
-    // 간단한 속도 추정 (실제로는 이전 프레임들과 비교)
-    return {
-      x: Math.random() * 0.1 - 0.05, // 시뮬레이션
-      y: Math.random() * 0.1 - 0.05,
-      z: Math.random() * 0.1 - 0.05,
-    };
-  }
-
-  private estimateAcceleration(
-    landmark: HandLandmark,
-    finger: number,
-    joint: number
-  ): HandLandmark {
-    // 간단한 가속도 추정
-    return {
-      x: Math.random() * 0.05 - 0.025,
-      y: Math.random() * 0.05 - 0.025,
-      z: Math.random() * 0.05 - 0.025,
-    };
-  }
-
-  private calculateRotation(
-    landmark: HandLandmark,
-    reference: HandLandmark
-  ): { pitch: number; yaw: number; roll: number } {
-    const dx = landmark.x - reference.x;
-    const dy = landmark.y - reference.y;
-    const dz = landmark.z - reference.z;
-
-    return {
-      pitch: Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)),
-      yaw: Math.atan2(dx, dz),
-      roll: Math.atan2(dx, dy),
-    };
-  }
-
-  private calculateCurvatureRate(
-    landmark: HandLandmark,
-    finger: number,
-    joint: number
-  ): number {
-    // 곡률 변화율 계산
-    return Math.random() * 2 - 1; // 시뮬레이션
-  }
-
-  private calculateFingerInteractionMatrix(
-    landmarks: HandLandmark[]
-  ): number[][] {
-    const matrix: number[][] = [];
-    // 5x5 손가락 상호작용 행렬 생성
-    for (let i = 0; i < 20; i++) {
-      const row: number[] = [];
-      for (let j = 0; j < 20; j++) {
-        if (i !== j) {
-          row.push(this.calculateDistanceExactCPP(landmarks[i], landmarks[j]));
-        } else {
-          row.push(0);
-        }
-      }
-      matrix.push(row);
-    }
-    return matrix;
-  }
-
-  private calculateJointConnectivityMatrix(
-    landmarks: HandLandmark[]
-  ): number[][] {
-    const matrix: number[][] = [];
-    // 21x21 관절 연결성 행렬
-    for (let i = 0; i < 21; i++) {
-      const row: number[] = [];
-      for (let j = 0; j < 21; j++) {
-        if (this.areJointsConnected(i, j)) {
-          row.push(this.calculateDistanceExactCPP(landmarks[i], landmarks[j]));
-        } else {
-          row.push(0);
-        }
-      }
-      matrix.push(row);
-    }
-    return matrix;
-  }
-
-  private areJointsConnected(i: number, j: number): boolean {
-    // 손가락 연결성 정의
-    const connections = [
-      [0, 1],
-      [1, 2],
-      [2, 3],
-      [3, 4], // 엄지
-      [0, 5],
-      [5, 6],
-      [6, 7],
-      [7, 8], // 검지
-      [0, 9],
-      [9, 10],
-      [10, 11],
-      [11, 12], // 중지
-      [0, 13],
-      [13, 14],
-      [14, 15],
-      [15, 16], // 약지
-      [0, 17],
-      [17, 18],
-      [18, 19],
-      [19, 20], // 소지
-    ];
-
-    return connections.some(
-      ([a, b]) => (a === i && b === j) || (a === j && b === i)
-    );
-  }
-
-  private flattenMatrix(matrix: number[][]): number[] {
-    return matrix.flat();
-  }
-
-  private calculateScaleInvariantFeatures(landmarks: HandLandmark[]): number[] {
-    const features: number[] = [];
-    const wrist = landmarks[0];
-
-    // 손목 중심 정규화된 거리들
-    for (let i = 1; i < 21; i++) {
-      const normalizedDist =
-        this.calculateDistanceExactCPP(landmarks[i], wrist) /
-        this.getHandSize(landmarks);
-      features.push(normalizedDist);
-    }
-
-    // 추가 스케일 불변 특징들 (총 100개까지)
-    while (features.length < 100) {
-      features.push(Math.random() * 0.1);
-    }
-
-    return features;
-  }
-
-  private calculateRotationInvariantFeatures(
-    landmarks: HandLandmark[]
-  ): number[] {
-    const features: number[] = [];
-
-    // 회전에 불변인 내적과 외적 기반 특징
-    for (let i = 0; i < 21; i++) {
-      for (let j = i + 1; j < 21; j++) {
-        const dotProduct =
-          landmarks[i].x * landmarks[j].x +
-          landmarks[i].y * landmarks[j].y +
-          landmarks[i].z * landmarks[j].z;
-        features.push(dotProduct);
-        if (features.length >= 100) break;
-      }
-      if (features.length >= 100) break;
-    }
-
-    return features.slice(0, 100);
-  }
-
-  private calculateFrequencyFeatures(landmarks: HandLandmark[]): number[] {
-    const features: number[] = [];
-
-    // 각 좌표축에 대한 FFT 시뮬레이션
-    const xCoords = landmarks.map((l) => l.x);
-    const yCoords = landmarks.map((l) => l.y);
-    const zCoords = landmarks.map((l) => l.z);
-
-    // 단순 주파수 분석 시뮬레이션
-    for (let i = 0; i < 60; i++) {
-      features.push(Math.cos(i * 0.1) * Math.sin(i * 0.15));
-    }
-    for (let i = 0; i < 60; i++) {
-      features.push(Math.sin(i * 0.2) * Math.cos(i * 0.1));
-    }
-    for (let i = 0; i < 64; i++) {
-      features.push(Math.tan(i * 0.05) * 0.1);
-    }
-
-    return features; // 184개
-  }
-
-  private normalizeFeatures(features: number[]): void {
-    if (features.length === 0) return;
-
-    let mean = 0;
-    for (const f of features) mean += f;
-    mean /= features.length;
-
-    let variance = 0;
-    for (const f of features) variance += (f - mean) * (f - mean);
-    variance /= features.length;
-    const stddev = Math.sqrt(variance);
-
-    if (stddev > 1e-6) {
-      for (let i = 0; i < features.length; i++) {
-        features[i] = (features[i] - mean) / stddev;
-      }
-    }
-  }
-
   private getHandSize(landmarks: HandLandmark[]): number {
     // 손목에서 중지 끝까지의 거리로 손 크기 추정
     return this.calculateDistanceExactCPP(landmarks[0], landmarks[12]);
@@ -697,32 +322,6 @@ export class MLSignRecognizer {
     const dy = a.y - b.y;
     const dz = a.z - b.z;
     return Math.sqrt(dx * dx + dy * dy + dz * dz);
-  }
-
-  /**
-   * C++의 calculateAngle 완전 복사 (sign_recognition.cpp:82-99)
-   */
-  private calculateAngleExactCPP(
-    a: HandLandmark,
-    b: HandLandmark,
-    c: HandLandmark
-  ): number {
-    // 벡터 BA와 BC 사이의 각도 계산
-    const baX = a.x - b.x;
-    const baY = a.y - b.y;
-    const bcX = c.x - b.x;
-    const bcY = c.y - b.y;
-
-    const dot = baX * bcX + baY * bcY;
-    const magBA = Math.sqrt(baX * baX + baY * baY);
-    const magBC = Math.sqrt(bcX * bcX + bcY * bcY);
-
-    if (magBA === 0.0 || magBC === 0.0) return 0.0;
-
-    let cosAngle = dot / (magBA * magBC);
-    cosAngle = Math.max(-1.0, Math.min(1.0, cosAngle)); // Clamp to [-1, 1]
-
-    return (Math.acos(cosAngle) * 180.0) / Math.PI; // Convert to degrees
   }
 
   /**
@@ -1318,183 +917,6 @@ export class MLSignRecognizer {
   }
 
   /**
-   * 대용량 행렬 곱셈 기반 수화 인식 성능 벤치마킹
-   * WASM vs JavaScript 진정한 행렬 연산 비교
-   */
-  async performAdvancedMatrixBenchmark(
-    landmarks: HandLandmark[],
-    iterations: number = 50
-  ): Promise<{
-    wasmMatrixML: {
-      avgTime: number;
-      minTime: number;
-      maxTime: number;
-      totalIterations: number;
-    };
-    jsMatrixML: {
-      avgTime: number;
-      minTime: number;
-      maxTime: number;
-      totalIterations: number;
-    };
-    speedup: number;
-    algorithmComparison: {
-      wasmResult?: MLRecognitionResult;
-      jsResult?: MLRecognitionResult;
-      resultsMatch: boolean;
-    };
-  }> {
-    console.log(`🔥 대용량 행렬 ML 벤치마킹 시작 (${iterations}회 반복)`);
-
-    const wasmTimes: number[] = [];
-    const jsTimes: number[] = [];
-    let wasmResult: MLRecognitionResult | undefined;
-    let jsResult: MLRecognitionResult | null | undefined;
-
-    // WASM 대용량 행렬 ML 성능 측정
-    if (this.isModelLoaded && this.wasmRecognizer) {
-      console.log("🔄 WASM Advanced Matrix ML 측정 중...");
-      for (let i = 0; i < iterations; i++) {
-        const startTime = performance.now();
-        // WASM의 새로운 대용량 행렬 메서드 호출 (아직 미구현)
-        const result = await this.wasmRecognizer.recognizeFast(landmarks); // 임시
-        const endTime = performance.now();
-        wasmTimes.push(endTime - startTime);
-
-        if (i === 0) wasmResult = result; // 첫 번째 결과 저장
-      }
-    }
-
-    // JavaScript 대용량 행렬 ML 성능 측정
-    console.log("🔄 JavaScript Advanced Matrix ML 측정 중...");
-    for (let i = 0; i < iterations; i++) {
-      const startTime = performance.now();
-      const result = this.recognizeWithAdvancedMatrixML(landmarks);
-      const endTime = performance.now();
-      jsTimes.push(endTime - startTime);
-
-      if (i === 0) jsResult = result; // 첫 번째 결과 저장
-    }
-
-    const wasmStats = {
-      avgTime:
-        wasmTimes.length > 0
-          ? wasmTimes.reduce((a, b) => a + b, 0) / wasmTimes.length
-          : 0,
-      minTime: wasmTimes.length > 0 ? Math.min(...wasmTimes) : 0,
-      maxTime: wasmTimes.length > 0 ? Math.max(...wasmTimes) : 0,
-      totalIterations: wasmTimes.length,
-    };
-
-    const jsStats = {
-      avgTime: jsTimes.reduce((a, b) => a + b, 0) / jsTimes.length,
-      minTime: Math.min(...jsTimes),
-      maxTime: Math.max(...jsTimes),
-      totalIterations: jsTimes.length,
-    };
-
-    const speedup =
-      wasmStats.avgTime > 0 ? jsStats.avgTime / wasmStats.avgTime : 0;
-
-    // 알고리즘 정확성 비교
-    const resultsMatch =
-      wasmResult && jsResult
-        ? wasmResult.gesture === jsResult.gesture &&
-          Math.abs(wasmResult.confidence - jsResult.confidence) < 0.01
-        : false;
-
-    console.log(`🔥 Advanced Matrix ML 벤치마크 완료`);
-    console.log(`⚡ WASM 평균: ${wasmStats.avgTime.toFixed(2)}ms`);
-    console.log(`⚡ JS 평균: ${jsStats.avgTime.toFixed(2)}ms`);
-    console.log(`📊 성능 비율: ${speedup.toFixed(2)}x`);
-    console.log(`🎯 결과 일치: ${resultsMatch ? "✅" : "❌"}`);
-
-    return {
-      wasmMatrixML: wasmStats,
-      jsMatrixML: jsStats,
-      speedup,
-      algorithmComparison: {
-        wasmResult,
-        jsResult: jsResult || undefined,
-        resultsMatch,
-      },
-    };
-  }
-
-  /**
-   * 상세 성능 분석 (오버헤드 측정 포함)
-   */
-  async performDetailedBenchmark(
-    landmarks: HandLandmark[],
-    iterations: number = 100
-  ): Promise<{
-    wasmOverhead: {
-      dataPrep: number;
-      memoryAlloc: number;
-      wasmCall: number;
-      resultParsing: number;
-      total: number;
-    };
-    jsDetails: {
-      featureExtraction: number;
-      neuralInference: number;
-      total: number;
-    };
-  }> {
-    const wasmOverhead = {
-      dataPrep: 0,
-      memoryAlloc: 0,
-      wasmCall: 0,
-      resultParsing: 0,
-      total: 0,
-    };
-    const jsDetails = { featureExtraction: 0, neuralInference: 0, total: 0 };
-
-    if (this.isModelLoaded && this.wasmRecognizer) {
-      for (let i = 0; i < iterations; i++) {
-        const overallStart = performance.now();
-
-        // WASM 상세 측정은 복잡하므로 전체 시간만 측정
-        await this.wasmRecognizer.recognizeFast(landmarks);
-
-        wasmOverhead.total += performance.now() - overallStart;
-      }
-    }
-
-    // JavaScript 상세 분석
-    for (let i = 0; i < iterations; i++) {
-      // 1. 특징 추출 시간
-      const featureStart = performance.now();
-      const features = this.extractComplexFeaturesExactCPP(landmarks);
-      jsDetails.featureExtraction += performance.now() - featureStart;
-
-      // 2. 신경망 추론 시간
-      const inferenceStart = performance.now();
-      this.neuralNetworkInferenceExactCPP(features);
-      jsDetails.neuralInference += performance.now() - inferenceStart;
-
-      jsDetails.total +=
-        jsDetails.featureExtraction + jsDetails.neuralInference;
-    }
-
-    // 평균 계산
-    for (const key in wasmOverhead) {
-      wasmOverhead[key as keyof typeof wasmOverhead] /= iterations;
-    }
-    for (const key in jsDetails) {
-      jsDetails[key as keyof typeof jsDetails] /= iterations;
-    }
-
-    console.log("📊 상세 성능 분석:");
-    console.log(`WASM 전체: ${wasmOverhead.total.toFixed(3)}ms`);
-    console.log(`JS 특징추출: ${jsDetails.featureExtraction.toFixed(3)}ms`);
-    console.log(`JS 신경망: ${jsDetails.neuralInference.toFixed(3)}ms`);
-    console.log(`JS 전체: ${jsDetails.total.toFixed(3)}ms`);
-
-    return { wasmOverhead, jsDetails };
-  }
-
-  /**
    * 대용량 데이터 벤치마크 (1000+ 랜드마크)
    */
   async performLargeDataBenchmark(
@@ -1545,11 +967,22 @@ export class MLSignRecognizer {
       }
     }
 
-    // JavaScript 성능 측정 (배치 처리)
-    console.log("🔄 JavaScript 대용량 데이터 성능 측정 중... (배치 처리)");
+    // JavaScript 성능 측정 (동일한 알고리즘으로 공정한 비교)
+    console.log(
+      "🔄 JavaScript recognizeWithAdvancedMLJS 성능 측정 중... (21개씩 청크 처리)"
+    );
     for (let i = 0; i < iterations; i++) {
       const startTime = performance.now();
-      this.recognizeWithLargeDatasetJS(largeDataset);
+
+      // WASM과 동일하게 21개씩 청크로 나누어 처리
+      const chunkSize = 21;
+      for (let j = 0; j < largeDataset.length; j += chunkSize) {
+        const chunk = largeDataset.slice(j, j + chunkSize);
+        if (chunk.length === chunkSize) {
+          this.recognizeWithAdvancedMLJS(chunk);
+        }
+      }
+
       const endTime = performance.now();
       jsTimes.push(endTime - startTime);
     }

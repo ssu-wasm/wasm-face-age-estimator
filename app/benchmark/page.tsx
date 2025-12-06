@@ -1,7 +1,10 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { MLSignRecognizer, HandLandmark } from "../components/ml-sign-recognizer";
+import {
+  MLSignRecognizer,
+  HandLandmark,
+} from "../components/ml-sign-recognizer";
 import PerformanceComparison from "../components/performance-comparison";
 import styles from "./benchmark.module.css";
 
@@ -17,12 +20,12 @@ function generateTestLandmarks(count: number = 21): HandLandmark[] {
 // 대용량 랜드마크 데이터 생성 (여러 프레임 시뮬레이션)
 function generateLargeDataset(frameCount: number = 50): HandLandmark[] {
   const allLandmarks: HandLandmark[] = [];
-  
+
   for (let frame = 0; frame < frameCount; frame++) {
     const frameLandmarks = generateTestLandmarks(21);
     allLandmarks.push(...frameLandmarks);
   }
-  
+
   return allLandmarks; // frameCount * 21 개의 랜드마크
 }
 
@@ -43,14 +46,14 @@ export default function BenchmarkPage() {
       try {
         setIsLoading(true);
         console.log("🔄 ML 인식기 초기화 중...");
-        
+
         const mlRecognizer = new MLSignRecognizer();
         const success = await mlRecognizer.loadModel();
-        
+
         if (success) {
           setRecognizer(mlRecognizer);
           console.log("✅ ML 인식기 초기화 완료");
-          
+
           // 초기 성능 데이터 설정
           setPerformanceData({
             wasm: { count: 0, avgTime: 0 },
@@ -77,7 +80,6 @@ export default function BenchmarkPage() {
     };
   }, []);
 
-
   const handleLargeDataBenchmark = async () => {
     if (!recognizer) {
       throw new Error("인식기가 초기화되지 않았습니다.");
@@ -87,11 +89,17 @@ export default function BenchmarkPage() {
     // 1050개 랜드마크 생성 (50 프레임 * 21 랜드마크)
     const largeDataset = generateLargeDataset(50);
     const result = await recognizer.performLargeDataBenchmark(largeDataset, 10);
-    
+
     // 성능 데이터 업데이트
     setPerformanceData({
-      wasm: { count: result.wasm.totalIterations, avgTime: result.wasm.avgTime },
-      javascript: { count: result.javascript.totalIterations, avgTime: result.javascript.avgTime },
+      wasm: {
+        count: result.wasm.totalIterations,
+        avgTime: result.wasm.avgTime,
+      },
+      javascript: {
+        count: result.javascript.totalIterations,
+        avgTime: result.javascript.avgTime,
+      },
       speedup: result.speedup,
     });
 
@@ -101,7 +109,6 @@ export default function BenchmarkPage() {
       speedup: result.speedup,
     };
   };
-
 
   if (isLoading) {
     return (
@@ -161,13 +168,6 @@ export default function BenchmarkPage() {
         onLargeDataBenchmarkStart={handleLargeDataBenchmark}
         realTimeData={performanceData}
       />
-
-      <footer className={styles.footer}>
-        <p>
-          📊 이 벤치마크는 동일한 알고리즘을 WASM과 JavaScript로 구현하여 
-          순수한 성능 차이를 측정합니다.
-        </p>
-      </footer>
     </div>
   );
 }

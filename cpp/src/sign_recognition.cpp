@@ -781,46 +781,7 @@ int SignRecognition::predictMLP(const std::vector<float>& featureArr) {
     return argmax;
 }
 
-// === 대용량 행렬 곱셈 기반 고급 수화 인식 구현 ===
 
-RecognitionResult SignRecognizer::recognizeWithAdvancedMatrixML(const std::vector<HandLandmark>& landmarks) {
-    // 1. 고급 행렬 특징 추출 (1260개)
-    std::vector<float> features = extractAdvancedMatrixFeatures(landmarks);
-    
-    // 2. 대용량 행렬 곱셈 신경망 추론
-    std::vector<float> outputs = advancedMatrixNeuralNetwork(features);
-    
-    // 3. 결과 해석 (기존과 동일한 로직)
-    if (outputs.size() < 5) {
-        return {"감지되지 않음", 0.0f, 0};
-    }
-    
-    // 최대값과 인덱스 찾기
-    int maxIdx = 0;
-    float maxVal = outputs[0];
-    for (int i = 1; i < 5; i++) {
-        if (outputs[i] > maxVal) {
-            maxVal = outputs[i];
-            maxIdx = i;
-        }
-    }
-    
-    // 소프트맥스 정규화
-    float sum = 0.0f;
-    for (float val : outputs) {
-        sum += std::exp(val);
-    }
-    float confidence = std::exp(maxVal) / sum;
-    
-    // 제스처 매핑
-    std::vector<std::string> gestures = {"감지되지 않음", "안녕하세요", "감사합니다", "예", "V"};
-    
-    if (maxIdx < gestures.size()) {
-        return {gestures[maxIdx], confidence, maxIdx};
-    }
-    
-    return {"감지되지 않음", 0.0f, 0};
-}
 
 std::vector<float> SignRecognizer::extractAdvancedMatrixFeatures(const std::vector<HandLandmark>& landmarks) {
     std::vector<float> features;
