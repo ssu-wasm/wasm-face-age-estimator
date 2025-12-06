@@ -26,27 +26,29 @@ interface BenchmarkResult {
 }
 
 interface Props {
-  onBenchmarkStart: () => Promise<BenchmarkResult>;
+  onLargeDataBenchmarkStart?: () => Promise<BenchmarkResult>;
   realTimeData: PerformanceData;
 }
 
 export default function PerformanceComparison({
-  onBenchmarkStart,
+  onLargeDataBenchmarkStart,
   realTimeData,
 }: Props) {
-  const [benchmarkResult, setBenchmarkResult] =
+  const [largeDataResult, setLargeDataResult] =
     useState<BenchmarkResult | null>(null);
-  const [isRunning, setIsRunning] = useState(false);
+  const [isLargeDataRunning, setIsLargeDataRunning] = useState(false);
 
-  const runBenchmark = async () => {
-    setIsRunning(true);
+  const runLargeDataBenchmark = async () => {
+    if (!onLargeDataBenchmarkStart) return;
+
+    setIsLargeDataRunning(true);
     try {
-      const result = await onBenchmarkStart();
-      setBenchmarkResult(result);
+      const result = await onLargeDataBenchmarkStart();
+      setLargeDataResult(result);
     } catch (error) {
-      console.error("벤치마킹 오류:", error);
+      console.error("대용량 데이터 벤치마킹 오류:", error);
     } finally {
-      setIsRunning(false);
+      setIsLargeDataRunning(false);
     }
   };
 
@@ -112,86 +114,74 @@ export default function PerformanceComparison({
       {/* 벤치마크 섹션 */}
       <div className={styles.benchmarkSection}>
         <h3>상세 벤치마크</h3>
-        <button
-          onClick={runBenchmark}
-          disabled={isRunning}
-          className={styles.benchmarkButton}
-        >
-          {isRunning ? "벤치마킹 실행 중..." : "100회 벤치마크 실행"}
-        </button>
+        <div className={styles.buttonGroup}>
+          {onLargeDataBenchmarkStart && (
+            <button
+              onClick={runLargeDataBenchmark}
+              disabled={isLargeDataRunning}
+              className={styles.largeDataButton}
+            >
+              {isLargeDataRunning
+                ? "대용량 테스트 중..."
+                : "🚀 1000+ 랜드마크 테스트"}
+            </button>
+          )}
+        </div>
 
-        {benchmarkResult && (
-          <div className={styles.benchmarkResults}>
-            <h4>벤치마크 결과</h4>
+        {/* 대용량 데이터 벤치마크 결과 */}
+        {largeDataResult && (
+          <div className={styles.largeDataResults}>
+            <h4>🚀 대용량 데이터 성능 결과 (1050개 랜드마크)</h4>
             <div className={styles.resultsGrid}>
               <div className={styles.resultSection}>
-                <h5>WASM 성능</h5>
-                <p>평균: {benchmarkResult.wasm.avgTime.toFixed(2)}ms</p>
-                <p>최소: {benchmarkResult.wasm.minTime.toFixed(2)}ms</p>
-                <p>최대: {benchmarkResult.wasm.maxTime.toFixed(2)}ms</p>
-                <p>반복횟수: {benchmarkResult.wasm.totalIterations}</p>
+                <h5>WASM (청크 처리)</h5>
+                <p>평균: {largeDataResult.wasm.avgTime.toFixed(2)}ms</p>
+                <p>최소: {largeDataResult.wasm.minTime.toFixed(2)}ms</p>
+                <p>최대: {largeDataResult.wasm.maxTime.toFixed(2)}ms</p>
+                <p>반복횟수: {largeDataResult.wasm.totalIterations}</p>
               </div>
 
               <div className={styles.resultSection}>
-                <h5>JavaScript 성능</h5>
-                <p>평균: {benchmarkResult.javascript.avgTime.toFixed(2)}ms</p>
-                <p>최소: {benchmarkResult.javascript.minTime.toFixed(2)}ms</p>
-                <p>최대: {benchmarkResult.javascript.maxTime.toFixed(2)}ms</p>
-                <p>반복횟수: {benchmarkResult.javascript.totalIterations}</p>
+                <h5>JavaScript (배치 처리)</h5>
+                <p>평균: {largeDataResult.javascript.avgTime.toFixed(2)}ms</p>
+                <p>최소: {largeDataResult.javascript.minTime.toFixed(2)}ms</p>
+                <p>최대: {largeDataResult.javascript.maxTime.toFixed(2)}ms</p>
+                <p>반복횟수: {largeDataResult.javascript.totalIterations}</p>
               </div>
 
               <div className={styles.resultSection}>
-                <h5>비교 결과</h5>
+                <h5>대용량 데이터 성능 비교</h5>
                 <p
                   style={{
-                    color: getSpeedupColor(benchmarkResult.speedup),
-                    fontSize: "1.2em",
+                    color: getSpeedupColor(largeDataResult.speedup),
+                    fontSize: "1.4em",
                     fontWeight: "bold",
                   }}
                 >
-                  {benchmarkResult.speedup.toFixed(2)}x{" "}
-                  {benchmarkResult.speedup > 1 ? "빠름" : "느림"}
+                  {largeDataResult.speedup.toFixed(2)}x{" "}
+                  {largeDataResult.speedup > 1 ? "빠름" : "느림"}
                 </p>
-                <p>{getPerformanceDescription(benchmarkResult.speedup)}</p>
+                <p>{getPerformanceDescription(largeDataResult.speedup)}</p>
 
-                {benchmarkResult.speedup > 1 && (
+                {largeDataResult.speedup > 1 ? (
                   <div className={styles.advantage}>
-                    <p>✅ WASM의 장점이 확인됨!</p>
+                    <p>🎉 드디어 WASM이 우위를 보였습니다!</p>
                     <p>
-                      CPU 집약적 작업에서{" "}
-                      {((benchmarkResult.speedup - 1) * 100).toFixed(0)}% 성능
-                      향상
+                      대용량 데이터에서{" "}
+                      {((largeDataResult.speedup - 1) * 100).toFixed(0)}% 성능
+                      향상 달성
                     </p>
+                  </div>
+                ) : (
+                  <div className={styles.jsAdvantage}>
+                    <p>🤔 여전히 JavaScript가 빠름</p>
+                    <p>WASM 호출 오버헤드가 여전히 큰 영향을 미침</p>
                   </div>
                 )}
               </div>
             </div>
           </div>
         )}
-      </div>
-
-      {/* 성능 최적화 팁 */}
-      <div className={styles.tipsSection}>
-        <h3>WASM vs JavaScript 성능 차이 요인</h3>
-        <ul className={styles.tipsList}>
-          <li>
-            <strong>컴파일된 코드:</strong> WASM은 미리 컴파일되어 네이티브에
-            가까운 성능
-          </li>
-          <li>
-            <strong>메모리 관리:</strong> 직접적인 메모리 접근으로 가비지 컬렉션
-            오버헤드 없음
-          </li>
-          <li>
-            <strong>수치 연산:</strong> 부동소수점과 정수 연산에서 특히 우수
-          </li>
-          <li>
-            <strong>벡터 연산:</strong> SIMD 명령어 활용 가능
-          </li>
-          <li>
-            <strong>예측 가능한 성능:</strong> JIT 컴파일러의 변동성 없음
-          </li>
-        </ul>
       </div>
     </div>
   );

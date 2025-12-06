@@ -37,6 +37,25 @@ public:
     // 랜드마크 배열 포인터로 인식 (WASM에서 사용)
     std::string recognizeFromPointer(float* landmarks, int count);
     
+    // 대용량 배치 처리 (한 번에 여러 프레임)
+    std::string recognizeBatch(float* landmarks, int frameCount, int landmarksPerFrame);
+    
+    // === WASM이 빛나는 영역들 ===
+    // 1. 이미지 필터링 (가우시안 블러, 엣지 검출 등)
+    void processImageData(uint8_t* imageData, int width, int height, int filterType);
+    
+    // 2. 대용량 행렬 연산 (1000x1000 이상)
+    void matrixMultiplyLarge(float* matA, float* matB, float* result, int size);
+    
+    // 3. 복잡한 수학 연산 (FFT, 삼각함수 등)
+    void computeFFT(float* realPart, float* imagPart, int size);
+    
+    // 4. 암호화/해시 연산
+    void sha256Hash(uint8_t* input, int length, uint8_t* output);
+    
+    // 5. 게임 물리 시뮬레이션 (충돌 검사, 파티클 등)
+    void simulateParticles(float* positions, float* velocities, int particleCount, float deltaTime);
+    
     // 임계값 설정
     void setDetectionThreshold(float threshold);
     void setRecognitionThreshold(float threshold);
@@ -57,11 +76,20 @@ private:
     // 고급 ML 스타일 인식 (최적화된 C++ 버전)
     RecognitionResult recognizeWithAdvancedML(const std::vector<HandLandmark>& landmarks);
     
+    // 대용량 행렬 곱셈 기반 고급 수화 인식 (1260개 특징)
+    RecognitionResult recognizeWithAdvancedMatrixML(const std::vector<HandLandmark>& landmarks);
+    
     // 특징 추출
     std::vector<float> extractComplexFeatures(const std::vector<HandLandmark>& landmarks);
     
+    // 고급 행렬 특징 추출 (1260개 특징)
+    std::vector<float> extractAdvancedMatrixFeatures(const std::vector<HandLandmark>& landmarks);
+    
     // 가상 신경망 추론
     std::vector<float> neuralNetworkInference(const std::vector<float>& features);
+    
+    // 대용량 행렬 곱셈 신경망 추론 (1260→1024→512→256→128→5)
+    std::vector<float> advancedMatrixNeuralNetwork(const std::vector<float>& features);
     
     // 행렬 연산
     void matrixMultiply(const std::vector<std::vector<float>>& A, 
